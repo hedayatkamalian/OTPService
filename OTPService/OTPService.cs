@@ -92,30 +92,9 @@ public class OTPService : IOTPService
         }
 
         var isCodeMatch = IsCodeMatch(otpItem.Code, code.Trim());
+        var isExpired = IsExpired(otpItem);
 
-        if (isCodeMatch && IsUsed(otpItem))
-        {
-            return Options.Errors.CodeIsUsed;
-        }
-
-        if (IsAttemptsExceeded(otpItem))
-        {
-            return Options.Errors.MaxAttemptsExceeded;
-        }
-
-        if (!isCodeMatch)
-        {
-            RegisterFailedAttempt(otpItem);
-
-            return Options.Errors.CodeIsInvalid;
-        }
-
-        if (IsExpired(otpItem))
-        {
-            return Options.Errors.CodeIsExpired;
-        }
-
-        return Consume(clientName.Trim(), otpItem);
+        return Redeem(clientName.Trim(), otpItem, isCodeMatch, isExpired);
     }
 
     private void EnsureGenerateIsAllowed(string clientName)
@@ -173,28 +152,7 @@ public class OTPService : IOTPService
         return otpItem.ExpireIn < _timeProvider.GetUtcNow();
     }
 
-    private bool IsUsed(OTPItem otpItem)
-    {
-        return otpItem.UsedAt is not null;
-    }
-
-    private bool IsAttemptsExceeded(OTPItem otpItem)
-    {
-        lock (_validationLock)
-        {
-            return otpItem.Attempts >= Options.MaxAttempts;
-        }
-    }
-
-    private void RegisterFailedAttempt(OTPItem otpItem)
-    {
-        lock (_validationLock)
-        {
-            otpItem.Attempts++;
-        }
-    }
-
-    private string? Consume(string clientName, OTPItem otpItem)
+    private string? Redeem(string clientName, OTPItem otpItem, bool isCodeMatch, bool isExpired)
     {
         lock (_validationLock)
         {
@@ -203,9 +161,26 @@ public class OTPService : IOTPService
                 return Options.Errors.CodeIsInvalid;
             }
 
-            if (IsUsed(otpItem))
+            if (isCodeMatch && otpItem.UsedAt is not null)
             {
                 return Options.Errors.CodeIsUsed;
+            }
+
+            if (otpItem.Attempts >= Options.MaxAttempts)
+            {
+                return Options.Errors.MaxAttemptsExceeded;
+            }
+
+            if (!isCodeMatch)
+            {
+                otpItem.Attempts++;
+
+                return Options.Errors.CodeIsInvalid;
+            }
+
+            if (isExpired)
+            {
+                return Options.Errors.CodeIsExpired;
             }
 
             otpItem.UsedAt = _timeProvider.GetUtcNow();
