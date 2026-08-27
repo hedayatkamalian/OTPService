@@ -91,12 +91,19 @@ public class OTPService : IOTPService
             return Options.Errors.CodeDoesNotExist;
         }
 
+        var isCodeMatch = IsCodeMatch(otpItem.Code, code.Trim());
+
+        if (isCodeMatch && IsUsed(otpItem))
+        {
+            return Options.Errors.CodeIsUsed;
+        }
+
         if (IsAttemptsExceeded(otpItem))
         {
             return Options.Errors.MaxAttemptsExceeded;
         }
 
-        if (!IsCodeMatch(otpItem.Code, code.Trim()))
+        if (!isCodeMatch)
         {
             RegisterFailedAttempt(otpItem);
 

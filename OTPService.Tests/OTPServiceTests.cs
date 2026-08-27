@@ -655,4 +655,52 @@ public class OTPServiceTests
 
         validated.ShouldBeFalse();
     }
+
+    [Fact]
+    public void OTPService_Must_Report_A_Used_Code_As_Used_After_Later_Failed_Attempts()
+    {
+        var service = CreateService(p => p.DigitsCount = 8);
+
+        var otpResult = service.Generate(CLIENT_NAME);
+
+        service.Validate(otpResult.Code, CLIENT_NAME).ShouldBeTrue();
+
+        for (var attempt = 0; attempt < options.MaxAttempts; attempt++)
+        {
+            service.ValidateAndReason(otpResult.Code + "5", CLIENT_NAME)
+                .ErrorMessage.ShouldBeEquivalentTo(options.Errors.CodeIsInvalid);
+        }
+
+        service.ValidateAndReason(otpResult.Code, CLIENT_NAME)
+            .ErrorMessage.ShouldBeEquivalentTo(options.Errors.CodeIsUsed);
+    }
+
+    [Fact]
+    public void OTPService_Must_Not_Reveal_That_A_Code_Was_Used_To_A_Wrong_Guess()
+    {
+        var service = CreateService(p => p.DigitsCount = 8);
+
+        var otpResult = service.Generate(CLIENT_NAME);
+
+        service.Validate(otpResult.Code, CLIENT_NAME).ShouldBeTrue();
+
+        service.ValidateAndReason(otpResult.Code + "5", CLIENT_NAME)
+            .ErrorMessage.ShouldBeEquivalentTo(options.Errors.CodeIsInvalid);
+    }
+
+    [Fact]
+    public void OTPService_Must_Still_Lock_An_Unused_Code_After_Max_Attempts()
+    {
+        var service = CreateService(p => p.DigitsCount = 8);
+
+        var otpResult = service.Generate(CLIENT_NAME);
+
+        for (var attempt = 0; attempt < options.MaxAttempts; attempt++)
+        {
+            service.Validate(otpResult.Code + "5", CLIENT_NAME).ShouldBeFalse();
+        }
+
+        service.ValidateAndReason(otpResult.Code, CLIENT_NAME)
+            .ErrorMessage.ShouldBeEquivalentTo(options.Errors.MaxAttemptsExceeded);
+    }
 }
