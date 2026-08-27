@@ -1,37 +1,48 @@
-﻿using System.Text;
+﻿using System.Security.Cryptography;
+using System.Text;
 
 namespace HedKam.Services;
 
-public class CodeGenerator
+public class CodeGenerator : ICodeGenerator
 {
     public string Generate(int digitsCount, bool allowDuplicateDigit, bool allowZero)
     {
         if (digitsCount < 1)
         {
-            throw new ArgumentOutOfRangeException(nameof(digitsCount), "Digits count must be greater than 0");
+            throw new ArgumentOutOfRangeException(nameof(digitsCount), "Digits count must be between 1 and 10");
         }
         if (digitsCount > 10)
         {
-            throw new ArgumentOutOfRangeException(nameof(digitsCount), "Digits count must be less than 10");
+            throw new ArgumentOutOfRangeException(nameof(digitsCount), "Digits count must be between 1 and 10");
         }
 
-        var random = new Random(DateTime.Now.Second);
+        var firstDigit = allowZero ? 0 : 1;
+        var availableDigitsCount = 10 - firstDigit;
+
+        if (!allowDuplicateDigit && digitsCount > availableDigitsCount)
+        {
+            throw new ArgumentOutOfRangeException(nameof(digitsCount), $"Digits count must not be greater than {availableDigitsCount} when duplicate digits are not allowed");
+        }
+
         var digits = new List<int>();
 
-        while (digits.Count < digitsCount)
+        if (allowDuplicateDigit)
         {
-            var digit = random.Next(allowZero ? 0 : 1, 10);
-
-            if (allowDuplicateDigit)
+            while (digits.Count < digitsCount)
             {
-                digits.Add(digit);
+                digits.Add(RandomNumberGenerator.GetInt32(firstDigit, 10));
             }
-            else
+        }
+        else
+        {
+            var availableDigits = Enumerable.Range(firstDigit, availableDigitsCount).ToList();
+
+            while (digits.Count < digitsCount)
             {
-                if (digits.All(p => p != digit))
-                {
-                    digits.Add(digit);
-                }
+                var index = RandomNumberGenerator.GetInt32(0, availableDigits.Count);
+
+                digits.Add(availableDigits[index]);
+                availableDigits.RemoveAt(index);
             }
         }
 

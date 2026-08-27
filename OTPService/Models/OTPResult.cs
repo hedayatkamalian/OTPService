@@ -1,4 +1,3 @@
 ﻿namespace HedKam.Services.Models;
 
-public record OTPResult(Guid TrackId, string Code, string Message);
-
+public record OTPResult(string Code, string Message);
