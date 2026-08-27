@@ -1,4 +1,5 @@
-using Microsoft.Extensions.Options;
+﻿using Microsoft.Extensions.Options;
+using Shouldly;
 
 namespace HedKam.Services.Tests;
 
@@ -23,4 +24,30 @@ public class MutableOptionsMonitor<TOptions> : IOptionsMonitor<TOptions>
     public TOptions Get(string? name) => CurrentValue;
 
     public IDisposable? OnChange(Action<TOptions, string?> listener) => null;
+}
+
+public class GateTimeProvider : TimeProvider
+{
+    private readonly ManualResetEventSlim _reached = new ManualResetEventSlim(false);
+    private readonly ManualResetEventSlim _released = new ManualResetEventSlim(false);
+    private int _blockedThreadId;
+
+    public void BlockCurrentThreadOnNextRead() => _blockedThreadId = Environment.CurrentManagedThreadId;
+
+    public void WaitUntilBlocked() => _reached.Wait(TimeSpan.FromSeconds(5)).ShouldBeTrue();
+
+    public void Release() => _released.Set();
+
+    public override DateTimeOffset GetUtcNow()
+    {
+        if (Environment.CurrentManagedThreadId == _blockedThreadId)
+        {
+            _blockedThreadId = 0;
+
+            _reached.Set();
+            _released.Wait(TimeSpan.FromSeconds(5));
+        }
+
+        return DateTimeOffset.UtcNow;
+    }
 }

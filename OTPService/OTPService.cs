@@ -49,7 +49,10 @@ public class OTPService : IOTPService
             ExpireIn = _timeProvider.GetUtcNow().AddMinutes(Options.ExpireInMinutes)
         };
 
-        _otpItems[normalizedClientName] = otp;
+        lock (_validationLock)
+        {
+            _otpItems[normalizedClientName] = otp;
+        }
 
         return new OTPResult(otp.Code, CreateMessage(patternName, otp.Code));
     }
@@ -105,12 +108,7 @@ public class OTPService : IOTPService
             return Options.Errors.CodeIsExpired;
         }
 
-        if (!TryMarkAsUsed(otpItem))
-        {
-            return Options.Errors.CodeIsUsed;
-        }
-
-        return null;
+        return Consume(clientName.Trim(), otpItem);
     }
 
     private void EnsureGenerateIsAllowed(string clientName)
@@ -189,18 +187,23 @@ public class OTPService : IOTPService
         }
     }
 
-    private bool TryMarkAsUsed(OTPItem otpItem)
+    private string? Consume(string clientName, OTPItem otpItem)
     {
         lock (_validationLock)
         {
+            if (!_otpItems.TryGetValue(clientName, out var currentItem) || !ReferenceEquals(currentItem, otpItem))
+            {
+                return Options.Errors.CodeIsInvalid;
+            }
+
             if (IsUsed(otpItem))
             {
-                return false;
+                return Options.Errors.CodeIsUsed;
             }
 
             otpItem.UsedAt = _timeProvider.GetUtcNow();
 
-            return true;
+            return null;
         }
     }
 

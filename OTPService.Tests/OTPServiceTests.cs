@@ -20,10 +20,10 @@ public class OTPServiceTests
         otpService = CreateService();
     }
 
-    private IOTPService CreateService(Action<OTPServiceOptions>? configure = null)
+    private IOTPService CreateService(Action<OTPServiceOptions>? configure = null, TimeProvider? clock = null)
     {
         var serviceCollection = new ServiceCollection();
-        serviceCollection.AddSingleton<TimeProvider>(timeProvider);
+        serviceCollection.AddSingleton<TimeProvider>(clock ?? timeProvider);
         serviceCollection.AddOTPService(p =>
         {
             p.MaxGeneratePerWindow = int.MaxValue;
@@ -625,5 +625,34 @@ public class OTPServiceTests
 
         service.ValidateAndReason(otpResult.Code, CLIENT_NAME + "_other")
             .ErrorMessage.ShouldBeEquivalentTo(options.Errors.CodeIsInvalid);
+    }
+
+    [Fact]
+    public void OTPService_Must_Not_Redeem_A_Code_That_Was_Replaced_While_Validating()
+    {
+        var gate = new GateTimeProvider();
+        var service = CreateService(p => p.DigitsCount = 8, gate);
+
+        var firstResult = service.Generate(CLIENT_NAME);
+
+        var validated = true;
+
+        var validating = new Thread(() =>
+        {
+            gate.BlockCurrentThreadOnNextRead();
+
+            validated = service.Validate(firstResult.Code, CLIENT_NAME);
+        });
+
+        validating.Start();
+
+        gate.WaitUntilBlocked();
+
+        service.Generate(CLIENT_NAME);
+
+        gate.Release();
+        validating.Join();
+
+        validated.ShouldBeFalse();
     }
 }
