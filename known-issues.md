@@ -67,6 +67,7 @@ Three public API changes were made. Nothing consumes this library yet, so they w
 None of these are defects; they are the natural next increments.
 
 - **`IOTPStore`.** The store is per-instance and in memory, so the library works in one process only and loses everything on restart. Extracting it behind an interface with an in-memory default would let callers plug in Redis or a database, and would make the DI lifetime stop mattering.
+- **An upstream rate limit on `Generate` (operator task, not a code change).** The store has no global cap, and `MaxGeneratePerWindow` is per client, so a caller that invents distinct client names retains ~400 bytes each until expiry — about 240 MB at a sustained 1,000 req/s with the default 10-minute expiry. A `MaxStoredCodes` cap was considered and rejected: evicting would let an attacker delete real users' codes, and denying would let them block issuance more cheaply than exhausting memory. The defence belongs in front of the endpoint. Documented under Limitations in the README.
 - **A scheduled sweep.** Cleanup still only runs when `Generate` is called. A service that issues nothing for a long stretch holds expired items until the next call. A background timer would decouple the two, at the cost of making the service `IDisposable`.
 - **XML documentation.** `GenerateDocumentationFile` is off, so the published package ships no IntelliSense for its public API.
 - **A CI workflow.** Nothing builds, tests, or packs automatically on push.

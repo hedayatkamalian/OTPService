@@ -31,12 +31,15 @@ public class GateTimeProvider : TimeProvider
     private readonly ManualResetEventSlim _reached = new ManualResetEventSlim(false);
     private readonly ManualResetEventSlim _released = new ManualResetEventSlim(false);
     private int _blockedThreadId;
+    private TimeSpan _offset = TimeSpan.Zero;
 
     public void BlockCurrentThreadOnNextRead() => _blockedThreadId = Environment.CurrentManagedThreadId;
 
     public void WaitUntilBlocked() => _reached.Wait(TimeSpan.FromSeconds(5)).ShouldBeTrue();
 
     public void Release() => _released.Set();
+
+    public void Advance(TimeSpan delta) => _offset = _offset.Add(delta);
 
     public override DateTimeOffset GetUtcNow()
     {
@@ -48,6 +51,6 @@ public class GateTimeProvider : TimeProvider
             _released.Wait(TimeSpan.FromSeconds(5));
         }
 
-        return DateTimeOffset.UtcNow;
+        return DateTimeOffset.UtcNow.Add(_offset);
     }
 }

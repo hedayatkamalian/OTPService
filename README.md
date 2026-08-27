@@ -160,6 +160,22 @@ builder.Services.AddOTPService();
 
 Codes are held **in memory, in a single process**. The library does not run across multiple servers and does not survive a restart — a code issued by one instance is unknown to every other. A shared backing store would be needed for that.
 
+### `Generate` must be rate limited upstream
+
+The store is keyed by client name and has **no global cap**. `MaxGeneratePerWindow` limits each client, but nothing limits how many *distinct* client names a caller may invent, and every one of them retains an entry until it expires.
+
+Measured cost is roughly **400 bytes per client**, held for `ExpireInMinutes`. For an endpoint an attacker can reach with arbitrary identifiers:
+
+| Sustained rate | Steady-state memory (10-minute expiry) |
+|---|---|
+| 100 req/s | ~24 MB |
+| 1,000 req/s | ~240 MB |
+| 10,000 req/s | ~2.4 GB |
+
+So put a real rate limit in front of `Generate` — per IP, per session, or per authenticated account — and prefer to call it only with identifiers you have already accepted, rather than whatever arrived in the request body. Lowering `ExpireInMinutes` cuts the exposure proportionally.
+
+The library deliberately does **not** offer a `MaxStoredCodes` cap. Both obvious policies make things worse rather than better: evicting the oldest entries would let an attacker flush out legitimate users' codes on demand, and refusing new ones once full would let an attacker block all issuance far more cheaply than exhausting memory. A cap turns a resource problem into a targeted one.
+
 Because a client holds only one live code, a user who requests a code on two devices can only finish on the most recent one.
 
 Verification is by client name, so anyone who knows a user's identifier can burn that user's guesses and force them to wait for a new code. This is inherent to identity-based OTP; the expiry window and issuance limit bound it.

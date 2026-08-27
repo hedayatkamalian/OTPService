@@ -156,7 +156,12 @@ public class OTPService : IOTPService
     {
         lock (_validationLock)
         {
-            if (!_otpItems.TryGetValue(clientName, out var currentItem) || !ReferenceEquals(currentItem, otpItem))
+            if (!_otpItems.TryGetValue(clientName, out var currentItem))
+            {
+                return Options.Errors.CodeDoesNotExist;
+            }
+
+            if (!ReferenceEquals(currentItem, otpItem))
             {
                 return Options.Errors.CodeIsInvalid;
             }

@@ -703,4 +703,35 @@ public class OTPServiceTests
         service.ValidateAndReason(otpResult.Code, CLIENT_NAME)
             .ErrorMessage.ShouldBeEquivalentTo(options.Errors.MaxAttemptsExceeded);
     }
+
+    [Fact]
+    public void OTPService_Must_Report_A_Code_Swept_While_Validating_As_Missing()
+    {
+        var gate = new GateTimeProvider();
+        var service = CreateService(p => { p.DigitsCount = 8; p.ExpireInMinutes = 5; p.CleanupIntervalSeconds = 0; }, gate);
+
+        var otpResult = service.Generate(CLIENT_NAME);
+
+        gate.Advance(TimeSpan.FromMinutes(6));
+
+        string? errorMessage = null;
+
+        var validating = new Thread(() =>
+        {
+            gate.BlockCurrentThreadOnNextRead();
+
+            errorMessage = service.ValidateAndReason(otpResult.Code, CLIENT_NAME).ErrorMessage;
+        });
+
+        validating.Start();
+
+        gate.WaitUntilBlocked();
+
+        service.Generate("someone_else");
+
+        gate.Release();
+        validating.Join();
+
+        errorMessage.ShouldBeEquivalentTo(options.Errors.CodeDoesNotExist);
+    }
 }
