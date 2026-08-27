@@ -84,17 +84,7 @@ public class OTPService : IOTPService
         ArgumentNullException.ThrowIfNull(code);
         ArgumentException.ThrowIfNullOrWhiteSpace(clientName);
 
-        var otpItem = FindOTPItem(clientName.Trim());
-
-        if (otpItem is null)
-        {
-            return Options.Errors.CodeDoesNotExist;
-        }
-
-        var isCodeMatch = IsCodeMatch(otpItem.Code, code.Trim());
-        var isExpired = IsExpired(otpItem);
-
-        return Redeem(clientName.Trim(), otpItem, isCodeMatch, isExpired);
+        return Redeem(clientName.Trim(), code.Trim());
     }
 
     private void EnsureGenerateIsAllowed(string clientName)
@@ -152,19 +142,18 @@ public class OTPService : IOTPService
         return otpItem.ExpireIn < _timeProvider.GetUtcNow();
     }
 
-    private string? Redeem(string clientName, OTPItem otpItem, bool isCodeMatch, bool isExpired)
+    private string? Redeem(string clientName, string code)
     {
         lock (_validationLock)
         {
-            if (!_otpItems.TryGetValue(clientName, out var currentItem))
+            var otpItem = FindOTPItem(clientName);
+
+            if (otpItem is null)
             {
                 return Options.Errors.CodeDoesNotExist;
             }
 
-            if (!ReferenceEquals(currentItem, otpItem))
-            {
-                return Options.Errors.CodeIsInvalid;
-            }
+            var isCodeMatch = IsCodeMatch(otpItem.Code, code);
 
             if (isCodeMatch && otpItem.UsedAt is not null)
             {
@@ -183,7 +172,7 @@ public class OTPService : IOTPService
                 return Options.Errors.CodeIsInvalid;
             }
 
-            if (isExpired)
+            if (IsExpired(otpItem))
             {
                 return Options.Errors.CodeIsExpired;
             }
@@ -210,7 +199,7 @@ public class OTPService : IOTPService
         {
             if (IsExpired(otpItem.Value))
             {
-                _otpItems.TryRemove(otpItem.Key, out _);
+                _otpItems.TryRemove(otpItem);
             }
         }
 

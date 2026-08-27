@@ -11,6 +11,10 @@ namespace HedKam.Services.Tests;
 public class OTPServiceTests
 {
     private const string CLIENT_NAME = "test_client";
+
+    // RemoveExpiredItems reads the clock for the cleanup interval check, then for the cleanup
+    // timestamp, and only then for the expiry of the first stored item.
+    private const int CLEANUP_EXPIRY_READ = 3;
     private IOTPService otpService;
     private OTPServiceOptions options = new OTPServiceOptions();
     private FakeTimeProvider timeProvider = new FakeTimeProvider();
@@ -33,6 +37,18 @@ public class OTPServiceTests
         var serviceProvider = serviceCollection.BuildServiceProvider();
 
         return serviceProvider.GetService<IOTPService>() ?? throw new Exception("service not found");
+    }
+
+    private static void WaitUntilBlockedOnLock(Thread thread)
+    {
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
+
+        while (!thread.ThreadState.HasFlag(ThreadState.WaitSleepJoin)
+            && !thread.ThreadState.HasFlag(ThreadState.Stopped)
+            && DateTimeOffset.UtcNow < deadline)
+        {
+            Thread.Yield();
+        }
     }
 
 
@@ -628,32 +644,40 @@ public class OTPServiceTests
     }
 
     [Fact]
-    public void OTPService_Must_Not_Redeem_A_Code_That_Was_Replaced_While_Validating()
+    public void OTPService_Must_Not_Redeem_A_Code_That_Expires_While_Waiting_For_The_Validation_Lock()
     {
         var gate = new GateTimeProvider();
-        var service = CreateService(p => p.DigitsCount = 8, gate);
+        var service = CreateService(p => { p.DigitsCount = 8; p.ExpireInMinutes = 5; p.CleanupIntervalSeconds = 3600; }, gate);
 
-        var firstResult = service.Generate(CLIENT_NAME);
+        var holderResult = service.Generate(CLIENT_NAME + "_holder");
+        var otpResult = service.Generate(CLIENT_NAME);
 
-        var validated = true;
-
-        var validating = new Thread(() =>
+        var holding = new Thread(() =>
         {
             gate.BlockCurrentThreadOnNextRead();
 
-            validated = service.Validate(firstResult.Code, CLIENT_NAME);
+            service.Validate(holderResult.Code, CLIENT_NAME + "_holder");
         });
 
-        validating.Start();
+        holding.Start();
 
         gate.WaitUntilBlocked();
 
-        service.Generate(CLIENT_NAME);
+        string? errorMessage = null;
+
+        var waiting = new Thread(() => errorMessage = service.ValidateAndReason(otpResult.Code, CLIENT_NAME).ErrorMessage);
+
+        waiting.Start();
+
+        WaitUntilBlockedOnLock(waiting);
+
+        gate.Advance(TimeSpan.FromMinutes(6));
 
         gate.Release();
-        validating.Join();
+        holding.Join();
+        waiting.Join();
 
-        validated.ShouldBeFalse();
+        errorMessage.ShouldBeEquivalentTo(options.Errors.CodeIsExpired);
     }
 
     [Fact]
@@ -705,33 +729,31 @@ public class OTPServiceTests
     }
 
     [Fact]
-    public void OTPService_Must_Report_A_Code_Swept_While_Validating_As_Missing()
+    public void OTPService_Must_Not_Sweep_A_Code_That_Was_Reissued_While_Cleaning_Up()
     {
         var gate = new GateTimeProvider();
         var service = CreateService(p => { p.DigitsCount = 8; p.ExpireInMinutes = 5; p.CleanupIntervalSeconds = 0; }, gate);
 
-        var otpResult = service.Generate(CLIENT_NAME);
+        service.Generate(CLIENT_NAME);
 
         gate.Advance(TimeSpan.FromMinutes(6));
 
-        string? errorMessage = null;
-
-        var validating = new Thread(() =>
+        var sweeping = new Thread(() =>
         {
-            gate.BlockCurrentThreadOnNextRead();
+            gate.BlockCurrentThreadOnRead(CLEANUP_EXPIRY_READ);
 
-            errorMessage = service.ValidateAndReason(otpResult.Code, CLIENT_NAME).ErrorMessage;
+            service.Generate("someone_else");
         });
 
-        validating.Start();
+        sweeping.Start();
 
         gate.WaitUntilBlocked();
 
-        service.Generate("someone_else");
+        var reissuedResult = service.Generate(CLIENT_NAME);
 
         gate.Release();
-        validating.Join();
+        sweeping.Join();
 
-        errorMessage.ShouldBeEquivalentTo(options.Errors.CodeDoesNotExist);
+        service.Validate(reissuedResult.Code, CLIENT_NAME).ShouldBeTrue();
     }
 }
