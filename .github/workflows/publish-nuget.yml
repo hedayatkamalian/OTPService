@@ -34,9 +34,9 @@ jobs:
       contents: read
       id-token: write # required: lets GitHub issue the OIDC token nuget.org exchanges for a short-lived key
 
-    # If you add an "environment" to the nuget.org trusted publishing policy,
-    # uncomment the matching environment here (e.g. for a manual approval gate):
-    # environment: release
+    # Must match the Environment field of the nuget.org trusted publishing
+    # policy exactly, or the OIDC token exchange fails with HTTP 401.
+    environment: production
 
     steps:
       - name: Checkout
