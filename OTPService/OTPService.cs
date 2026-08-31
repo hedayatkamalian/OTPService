@@ -1,5 +1,6 @@
-﻿
-
+﻿using System.Collections.Concurrent;
+using System.Security.Cryptography;
+using System.Text;
 using HedKam.Services.Exceptions;
 using HedKam.Services.Models;
 using HedKam.Services.Options;
@@ -8,130 +9,217 @@ using Microsoft.Extensions.Options;
 namespace HedKam.Services;
 public class OTPService : IOTPService
 {
-    private const int MAX_OTP_ITEMS = 100;
-    private OTPServiceOptions _options;
-    private static List<OTPItem> OTPItems = new List<OTPItem>();
-    private CodeGenerator _codeGenerator => new CodeGenerator();
+    private readonly IOptionsMonitor<OTPServiceOptions> _optionsMonitor;
+    private readonly ICodeGenerator _codeGenerator;
+    private readonly TimeProvider _timeProvider;
+    private readonly ConcurrentDictionary<string, OTPItem> _otpItems = new ConcurrentDictionary<string, OTPItem>();
+    private readonly object _validationLock = new object();
+    private readonly object _cleanupLock = new object();
+    private readonly object _generateLock = new object();
+    private readonly ConcurrentDictionary<string, List<DateTimeOffset>> _generateHistory = new ConcurrentDictionary<string, List<DateTimeOffset>>();
+    private DateTimeOffset _lastCleanup;
 
-    public OTPService(IOptionsMonitor<OTPServiceOptions> options)
+    private OTPServiceOptions Options => _optionsMonitor.CurrentValue;
+
+    public OTPService(IOptionsMonitor<OTPServiceOptions> optionsMonitor, ICodeGenerator codeGenerator, TimeProvider timeProvider)
     {
-        _options = options.CurrentValue;
-        options.OnChange(p => _options = p);
+        ArgumentNullException.ThrowIfNull(optionsMonitor);
+        ArgumentNullException.ThrowIfNull(codeGenerator);
+        ArgumentNullException.ThrowIfNull(timeProvider);
+
+        _optionsMonitor = optionsMonitor;
+        _codeGenerator = codeGenerator;
+        _timeProvider = timeProvider;
+        _lastCleanup = timeProvider.GetUtcNow();
     }
 
     public OTPResult Generate(string clientName, string? patternName = null)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(clientName);
+
+        var normalizedClientName = clientName.Trim();
+
         RemoveExpiredItems();
+        EnsureGenerateIsAllowed(normalizedClientName);
 
         var otp = new OTPItem
         {
-            Code = _codeGenerator.Generate(_options.DigitsCount, _options.AllowDuplicateDigit, _options.AllowZero),
-            ClientName = clientName.Trim(),
-            ExpireIn = DateTimeOffset.UtcNow.AddMinutes(_options.ExpireInMinutes),
-            TrackId = Guid.NewGuid()
+            Code = _codeGenerator.Generate(Options.DigitsCount, Options.AllowDuplicateDigit, Options.AllowZero),
+            ClientName = normalizedClientName,
+            ExpireIn = _timeProvider.GetUtcNow().AddMinutes(Options.ExpireInMinutes)
         };
 
-        OTPItems.Add(otp);
+        lock (_validationLock)
+        {
+            _otpItems[normalizedClientName] = otp;
+        }
 
-        return new OTPResult(otp.TrackId, otp.Code, CreateMessage(patternName, otp.Code));
+        return new OTPResult(otp.Code, CreateMessage(patternName, otp.Code));
     }
 
-    public bool Validate(string code, Guid trackId, string clientName)
+    public bool Validate(string code, string clientName)
     {
-        var otpItem = OTPItems.FirstOrDefault(p => p.Code == code.Trim() && p.TrackId == trackId && p.ClientName == clientName);
-
-        if (otpItem is null)
-        {
-            return false;
-        }
-        else
-        {
-            return IsExpired(otpItem) ? false : true;
-        }
+        return GetValidationError(code, clientName) is null;
     }
 
-    public void ValidateAndThrow(string code, Guid trackId, string clientName)
+    public void ValidateAndThrow(string code, string clientName)
     {
-        var otpItem = OTPItems.FirstOrDefault(p => p.TrackId == trackId);
+        var error = GetValidationError(code, clientName);
 
-        if (otpItem is null)
+        if (error is not null)
         {
-            throw new OTPValidationException(_options.Errors.TrackIdDoesNotExist);
-        }
-
-        if (otpItem.ClientName != clientName.Trim())
-        {
-            throw new OTPValidationException(_options.Errors.ClientNameDoesNotMatch);
-        }
-
-        if (otpItem.Code != code.Trim())
-        {
-            throw new OTPValidationException(_options.Errors.CodeIsInvalid);
-        }
-
-        if (IsExpired(otpItem))
-        {
-            throw new OTPValidationException(_options.Errors.CodeIsExpired);
+            throw new OTPValidationException(error);
         }
     }
 
-    public OTPValidateResult ValidateAndReason(string code, Guid trackId, string clientName)
+    public OTPValidateResult ValidateAndReason(string code, string clientName)
     {
-        var otpItem = OTPItems.FirstOrDefault(p => p.TrackId == trackId);
+        var error = GetValidationError(code, clientName);
 
-        if (otpItem is null)
+        return new OTPValidateResult(error is null, error);
+    }
+
+    private string? GetValidationError(string code, string clientName)
+    {
+        ArgumentNullException.ThrowIfNull(code);
+        ArgumentException.ThrowIfNullOrWhiteSpace(clientName);
+
+        return Redeem(clientName.Trim(), code.Trim());
+    }
+
+    private void EnsureGenerateIsAllowed(string clientName)
+    {
+        var now = _timeProvider.GetUtcNow();
+        var windowStart = now.AddSeconds(-Options.GenerateWindowSeconds);
+
+        lock (_generateLock)
         {
-            return new OTPValidateResult(false, _options.Errors.TrackIdDoesNotExist);
-        }
+            var history = _generateHistory.GetOrAdd(clientName, p => new List<DateTimeOffset>());
 
-        if (otpItem.ClientName != clientName.Trim())
+            history.RemoveAll(p => p < windowStart);
+
+            if (history.Count >= Options.MaxGeneratePerWindow)
+            {
+                throw new OTPGenerateLimitException(Options.Errors.GenerateLimitExceeded);
+            }
+
+            history.Add(now);
+        }
+    }
+
+    private void RemoveStaleGenerateHistory()
+    {
+        var windowStart = _timeProvider.GetUtcNow().AddSeconds(-Options.GenerateWindowSeconds);
+
+        lock (_generateLock)
         {
-            return new OTPValidateResult(false, _options.Errors.ClientNameDoesNotMatch);
-        }
+            foreach (var history in _generateHistory)
+            {
+                history.Value.RemoveAll(p => p < windowStart);
 
-        if (otpItem.Code != code.Trim())
-        {
-            return new OTPValidateResult(false, _options.Errors.CodeIsInvalid);
+                if (history.Value.Count == 0)
+                {
+                    _generateHistory.TryRemove(history.Key, out _);
+                }
+            }
         }
+    }
 
-        if (IsExpired(otpItem))
-        {
-            return new OTPValidateResult(false, _options.Errors.CodeIsExpired);
-        }
+    private OTPItem? FindOTPItem(string clientName)
+    {
+        _otpItems.TryGetValue(clientName, out var otpItem);
 
-        return new OTPValidateResult(true, null);
+        return otpItem;
+    }
+
+    private bool IsCodeMatch(string storedCode, string providedCode)
+    {
+        return CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(storedCode), Encoding.UTF8.GetBytes(providedCode));
     }
 
     private bool IsExpired(OTPItem otpItem)
     {
-        return otpItem.ExpireIn < DateTimeOffset.UtcNow;
+        return otpItem.ExpireIn < _timeProvider.GetUtcNow();
+    }
+
+    private string? Redeem(string clientName, string code)
+    {
+        lock (_validationLock)
+        {
+            var otpItem = FindOTPItem(clientName);
+
+            if (otpItem is null)
+            {
+                return Options.Errors.CodeDoesNotExist;
+            }
+
+            var isCodeMatch = IsCodeMatch(otpItem.Code, code);
+
+            if (isCodeMatch && otpItem.UsedAt is not null)
+            {
+                return Options.Errors.CodeIsUsed;
+            }
+
+            if (otpItem.Attempts >= Options.MaxAttempts)
+            {
+                return Options.Errors.MaxAttemptsExceeded;
+            }
+
+            if (!isCodeMatch)
+            {
+                otpItem.Attempts++;
+
+                return Options.Errors.CodeIsInvalid;
+            }
+
+            if (IsExpired(otpItem))
+            {
+                return Options.Errors.CodeIsExpired;
+            }
+
+            otpItem.UsedAt = _timeProvider.GetUtcNow();
+
+            return null;
+        }
     }
 
     private void RemoveExpiredItems()
     {
-        if (OTPItems.Count > MAX_OTP_ITEMS)
+        lock (_cleanupLock)
         {
-            OTPItems.RemoveAll(p => IsExpired(p));
+            if (_lastCleanup.AddSeconds(Options.CleanupIntervalSeconds) > _timeProvider.GetUtcNow())
+            {
+                return;
+            }
+
+            _lastCleanup = _timeProvider.GetUtcNow();
         }
+
+        foreach (var otpItem in _otpItems)
+        {
+            if (IsExpired(otpItem.Value))
+            {
+                _otpItems.TryRemove(otpItem);
+            }
+        }
+
+        RemoveStaleGenerateHistory();
     }
 
-    private string CreateMessage(string? PatternName, string Code)
+    private string CreateMessage(string? patternName, string code)
     {
-        if (PatternName == null)
+        if (patternName is null)
         {
-            return Code;
+            return code;
         }
-        else
+
+        var pattern = Options.MessagePatterns.FirstOrDefault(p => p.Name == patternName);
+
+        if (pattern is null)
         {
-            var pattern = _options.MessagePattern.FirstOrDefault(p => p.Name == PatternName);
-            if (pattern == null)
-            {
-                return Code;
-            }
-            else
-            {
-                return pattern.Pattern.Replace("{code}", Code);
-            }
+            return code;
         }
+
+        return pattern.Pattern.Replace("{code}", code);
     }
 }

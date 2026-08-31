@@ -2,8 +2,9 @@
 
 public class OTPItem
 {
-    public string Code { get; set; }
-    public Guid TrackId { get; set; }
-    public string ClientName { get; set; }
+    public required string Code { get; set; }
+    public required string ClientName { get; set; }
     public DateTimeOffset ExpireIn { get; set; }
+    public DateTimeOffset? UsedAt { get; set; }
+    public int Attempts { get; set; }
 }

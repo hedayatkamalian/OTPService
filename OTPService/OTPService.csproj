@@ -1,15 +1,37 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <WarningsNotAsErrors>NU1900</WarningsNotAsErrors>
     <RootNamespace>HedKam.Services</RootNamespace>
+    <AssemblyName>HedKam.OTPService</AssemblyName>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <PackageId>HedKam.OTPService</PackageId>
+    <Version>1.0.0</Version>
+    <Authors>Hedayat Kamalian</Authors>
+    <Description>A one-time-password service for .NET: cryptographically random codes, single-use redemption, per-code attempt limits, and per-client issuance throttling, wired up with a single AddOTPService call.</Description>
+    <PackageTags>otp;one-time-password;2fa;mfa;verification-code;authentication</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageProjectUrl>https://github.com/hedayatkamalian/OTPService</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/hedayatkamalian/OTPService.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.Extensions.Options" Version="9.0.3" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.11" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="..\README.md" Pack="true" PackagePath="\" />
+    <None Include="..\LICENSE" Pack="true" PackagePath="\" />
+  </ItemGroup>
 
 </Project>
