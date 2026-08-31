@@ -1,0 +1,102 @@
+# NOTE: the trusted publishing policy on nuget.org is bound to this file's NAME
+# (publish-nuget.yml). Renaming or moving this file breaks publishing until the
+# policy is updated on nuget.org.
+name: Publish to NuGet
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Package version to publish (e.g. 1.0.1)'
+        required: true
+        type: string
+      dry-run:
+        description: 'Build and pack only, do not push to NuGet'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  NUGET_SOURCE: https://api.nuget.org/v3/index.json
+
+jobs:
+  publish:
+    name: Build, test and publish
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write # required: lets GitHub issue the OIDC token nuget.org exchanges for a short-lived key
+
+    # If you add an "environment" to the nuget.org trusted publishing policy,
+    # uncomment the matching environment here (e.g. for a manual approval gate):
+    # environment: release
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Resolve package version
+        id: version
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            version='${{ inputs.version }}'
+          else
+            version="${GITHUB_REF_NAME#v}"
+          fi
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::'$version' is not a valid semantic version (expected 1.2.3 or 1.2.3-preview.1)."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Publishing version $version"
+
+      - name: Restore
+        run: dotnet restore OTPService.sln
+
+      - name: Build
+        run: dotnet build OTPService.sln -c Release --no-restore -p:Version=${{ steps.version.outputs.version }}
+
+      - name: Test
+        run: dotnet test OTPService.sln -c Release --no-build --verbosity normal
+
+      - name: Pack
+        run: dotnet pack src/OTPService.csproj -c Release --no-build -o artifacts -p:Version=${{ steps.version.outputs.version }}
+
+      - name: Upload packages as build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuget-packages-${{ steps.version.outputs.version }}
+          path: |
+            artifacts/*.nupkg
+            artifacts/*.snupkg
+          if-no-files-found: error
+
+      # The temporary key is valid for 1 hour, so it is requested immediately
+      # before the push rather than at the start of the job.
+      - name: NuGet login (OIDC -> short-lived API key)
+        id: login
+        if: ${{ github.event_name == 'push' || !inputs.dry-run }}
+        uses: NuGet/login@v1
+        with:
+          user: ${{ secrets.NUGET_USER }}
+
+      - name: Push to NuGet
+        if: ${{ github.event_name == 'push' || !inputs.dry-run }}
+        run: |
+          dotnet nuget push "artifacts/*.nupkg" \
+            --api-key "${{ steps.login.outputs.NUGET_API_KEY }}" \
+            --source "$NUGET_SOURCE" \
+            --skip-duplicate
